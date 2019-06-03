@@ -1,7 +1,7 @@
 #include<stdio.h>
 #include<string.h>
 #include<stdlib.h>
-
+#include <unistd.h>
 #define ALIGN(x, exp)( (((x)+(1<<(exp))-1)>>(exp)) << (exp) )
 
 #define		UP_PIC_HTTP 	"循环测试"
@@ -12,7 +12,7 @@
 /************************************************************************
 base64 鈻捬€鈹?
 ************************************************************************/
-
+#define SIYANG  1
 const char m_alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 // Base64 鈻捬€鈹嬧?鈺欌敎鈻?
 void base64_encode(const unsigned char *pSrc, int srclen, char *szOut)
@@ -127,9 +127,11 @@ wget -O result.log --header="Content-Type: application/json" --post-data="{\"lic
 #define cmd_img "\\\",\\\"imgData\\\":\\\""
 #define cmd_mdtId "\\\",\\\"mdtId\\\":\\\""
 #define cmd_json_end  "\\\"}\" "
+#if SIYANG
+#define cmd_server_baseaddr  "http://218.90.157.210:18081/"
+#else
 #define cmd_server_baseaddr  "http://202.111.173.175:8082/"
-//#define cmd_server_baseaddr  "http://202.111.173.175:8083/"
-
+#endif
 /*must have 2>&1 !!!!!!*/
 #define cmd_face "seetaface.go?method=faceCompare 2>&1"
 
@@ -256,12 +258,12 @@ int read_pic_file_to_base64_code(char *send_datas,unsigned char *name)
 
   return 0;
 }
-
+#if 1
 int wget_post_pic_func(unsigned char *buf,unsigned short len,int ret_wget)
 {
         FILE *popen_fp;
 	 fd_set fds;
-
+	int ret;
 	int popen_fd,maxfdp,no_pic,select_ret;
 	int mtd_str_offset=0;
 	int buf_offset=0;
@@ -329,19 +331,155 @@ int wget_post_pic_func(unsigned char *buf,unsigned short len,int ret_wget)
 	popen_fd = fileno(popen_fp);
 		
 
-	struct timeval timeout={0,500}; //select等待10秒
+	struct timeval timeout={10,0}; //select等待10秒
+
+	 FD_ZERO(&fds); //每次循环都要清空集合，否则不能检测描述符变化
+	 FD_SET(popen_fd,&fds); //添加描述符
+	 timeout.tv_sec=10;
+	 timeout.tv_usec=0;//select函数会不断修改timeout的值，所以每次循环都应该>重新赋值[windows不受此影响]
+	 maxfdp=popen_fd+1; //描述符最大值加1
+
 
 	while(1)
 	{
 
-	        FD_ZERO(&fds); //每次循环都要清空集合，否则不能检测描述符变化
-	        FD_SET(popen_fd,&fds); //添加描述符
-	        timeout.tv_sec=0;
-	        timeout.tv_usec=500;//select函数会不断修改timeout的值，所以每次循环都应该>重新赋值[windows不受此影响]
-	        maxfdp=popen_fd+1; //描述符最大值加1
+		fd_set rdset = fds;
+		select_ret = select(maxfdp,&rdset,NULL,NULL,&timeout);//select使用
+		printf("select_ret =====:%d \n",select_ret);	
 
-		select_ret = select(maxfdp,&fds,&fds,NULL,&timeout);//select使用
-			
+			if(select_ret < 0)
+				{
+					printf("popen erreor\n");
+					got_net_status = 0;
+					break; //select错误，退出程序
+				}
+			else if(0 == select_ret) 
+				{
+					printf("popen timeout pp\n");
+					system("killall wget -9");
+					got_net_status = 0;
+					break; 
+				}
+			else
+				{
+					printf("popen default\n");
+					if(FD_ISSET(popen_fd, &rdset))
+					{
+						ret = read(popen_fd,tem_buf,sizeof(tem_buf));
+						printf("popen read  ret :%d\n",ret);
+						if(ret <= 0)
+						{
+						printf("popen read  pp\n");
+						got_net_status = 1;
+						break;
+						}
+
+					}
+				}
+
+		}
+
+		printf("key 1: %d :%d\n",got_net_status,ret_wget);
+		if((0 != got_net_status)||(0 == ret_wget))
+		{
+			printf("key 2: %d:%d\n",got_net_status,ret_wget);
+			prase_json_face_ret_data(got_net_status);
+		}
+	 
+	
+
+	pclose(popen_fp);
+	close(popen_fd);
+	return got_net_status;
+}
+#else
+int wget_post_pic_func(unsigned char *buf,unsigned short len,int ret_wget)
+{
+        FILE *popen_fp;
+	 fd_set fds;
+	int ret;
+	int popen_fd,maxfdp,no_pic,select_ret;
+	int mtd_str_offset=0;
+	int buf_offset=0;
+	int key = 0;
+	int len_picname;
+
+	char tem_buf[1024] = {0};
+	char sendbuf[300000]={0};
+	char cmd[310000] = {0};
+	char temp_mtd_id_str[7]={0};
+	unsigned char face_driver_num[20]={0};
+	unsigned char got_net_status,ui_face_ret;
+	unsigned char *pic_name;
+//	ui_base_parameter_t* base_parameter;
+
+
+	len_picname = (len - 19 - 1);//-driver_num(19) -face ret(1)
+	printf("len_picname : %d \n\r",len_picname);
+	//got pic path
+	if((buf ==NULL)||(len_picname <= 0))
+	{
+		printf(" wget_post_pic_func use error!!!\n\r");
+		return 0;
+	}
+	pic_name = malloc(len_picname);
+	memset(pic_name,0,len_picname);
+	//prase data
+	ui_face_ret = *buf;
+	buf_offset++;
+	memcpy(&face_driver_num,buf+buf_offset,19);//driver_num(19)
+	buf_offset+= 19;//driver_num(19)
+	strncpy(pic_name,buf+buf_offset,len_picname);
+	printf("pic_name::%s\n",pic_name);
+
+	//pic file data to base64
+	no_pic = read_pic_file_to_base64_code(sendbuf,pic_name);
+	free(pic_name);
+	if(no_pic == 1) // 打开文件失败
+	{
+		printf("---no-open-pic----\n");
+		return 0;
+	}
+#if 0
+	//file OK
+	base_parameter = get_ui_base_parameter();
+	if(strlen((char*)base_parameter->terminal_id)<=6)//only copy all data
+	{
+		strncpy(temp_mtd_id_str,(char*)base_parameter->terminal_id,6);
+	}
+	else //only copy last 6 byte
+	{
+		mtd_str_offset = strlen((char*)base_parameter->terminal_id)-6;
+		strncpy(temp_mtd_id_str,(char*)base_parameter->terminal_id+mtd_str_offset,6);
+	}
+#endif
+	 sprintf(cmd,"%s%s%s%s%s%s%s%s%s%s%s",cmd_head,cmd_log_path,cmd_json_license,face_driver_num,cmd_img,sendbuf,cmd_mdtId,\
+	 "180884",cmd_json_end,cmd_server_baseaddr,cmd_face);
+
+	popen_fp = popen(cmd,"r");
+	if(popen_fp < 0)
+	{
+		printf("----popen-fail----\n");
+		return 0;
+	}
+	popen_fd = fileno(popen_fp);
+		
+
+	struct timeval timeout={10,0}; //select等待10秒
+
+	 FD_ZERO(&fds); //每次循环都要清空集合，否则不能检测描述符变化
+	 FD_SET(popen_fd,&fds); //添加描述符
+	 timeout.tv_sec=10;
+	 timeout.tv_usec=0;//select函数会不断修改timeout的值，所以每次循环都应该>重新赋值[windows不受此影响]
+	 maxfdp=popen_fd+1; //描述符最大值加1
+
+
+	while(1)
+	{
+
+		fd_set rdset = fds;
+		select_ret = select(maxfdp,&rdset,NULL,NULL,&timeout);//select使用
+		printf("select_ret =====:%d \n",select_ret);	
 	        switch(select_ret) 
 		{
 			case -1:
@@ -356,17 +494,32 @@ int wget_post_pic_func(unsigned char *buf,unsigned short len,int ret_wget)
 					key = 1;
 					break; 
 			default:
-				
-					for(;;)
-					{
-					fread(tem_buf,1,sizeof(tem_buf),popen_fp);
-					if(feof(popen_fp))
-					break;
-					}
-					got_net_status = 1;
 					printf("popen default\n");
-					key = 1;
-					break;
+					if(FD_ISSET(popen_fd, &rdset))
+					{
+					#if 1
+						ret = read(popen_fd,tem_buf,sizeof(tem_buf));
+						printf("popen read  ret :%d\n",ret);
+						if(ret <= 0)
+						{
+						printf("popen read  pp\n");
+						got_net_status = 1;
+						key = 1;
+						break;
+						}
+					#else
+						for(;;)
+						{
+						printf("yaoneile yaoniele \n");
+						fread(tem_buf,1,sizeof(tem_buf),popen_fp);
+						if(feof(popen_fp))
+						break;
+						}
+					#endif
+					}
+				//	got_net_status = 1;
+				//	key = 1;
+				//	break;
 
 		}
 
@@ -383,11 +536,12 @@ int wget_post_pic_func(unsigned char *buf,unsigned short len,int ret_wget)
 		}
 	}
 	 
+	close(popen_fd);
 
 	pclose(popen_fp);
-
 	return got_net_status;
 }
+#endif
 
 #if 1
 typedef struct{
@@ -401,8 +555,13 @@ void main(void)
 
 	ui_proto_test_data  data_test;
 	//unsigned char pathq[] = "/mnt/photo.jpg1";
-	unsigned char pathq[] = "/home/fleety/share/test/20111212.jpg";
+#if SIYANG
+	unsigned char numaa[19] = "000000000876876876";
+	unsigned char pathq[] = "/home/fleety/share/test/000000000876876876.jpg";
+#else
 	unsigned char numaa[19] = "20111212";
+	unsigned char pathq[] = "/home/fleety/share/test/20111212.jpg";
+#endif
 	int wget_ret = 0;
 	data_test.ret = 1;
 	
